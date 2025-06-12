@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# Skip if this is an amend operation from our post-commit hook
+if [ -f "$(git rev-parse --git-dir)/skip_tests_on_amend" ]; then
+    rm "$(git rev-parse --git-dir)/skip_tests_on_amend"
+    exit 0
+fi
+
+# Check for skip-tests flag in commit message
+COMMIT_MSG_FILE="$(git rev-parse --git-dir)/COMMIT_EDITMSG"
+COMMIT_MSG_TEMP_FILE="$(git rev-parse --git-dir)/COMMIT_MSG"
+SKIP_DETECTED=false
+
+# Method 1: Check COMMIT_EDITMSG file
+if [ -f "$COMMIT_MSG_FILE" ]; then
+    COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+    if echo "$COMMIT_MSG" | grep -qE '\[skip-tests\]|--skip-tests'; then
+        SKIP_DETECTED=true
+    fi
+fi
+
+# Method 2: Check temporary commit message file (some IDEs use this)
+if [ -f "$COMMIT_MSG_TEMP_FILE" ]; then
+    COMMIT_MSG=$(cat "$COMMIT_MSG_TEMP_FILE")
+    if echo "$COMMIT_MSG" | grep -qE '\[skip-tests\]|--skip-tests'; then
+        SKIP_DETECTED=true
+    fi
+fi
+
+# Method 3: Check git log for staged message (fallback)
+if [ "$SKIP_DETECTED" = false ]; then
+    # Try to get commit message from git status or recent operations
+    if git status --porcelain | grep -q .; then
+        # Check if there's a recent commit message in the reflog or temp files
+        for possible_msg_file in "$(git rev-parse --git-dir)"/COMMIT_MSG* "$(git rev-parse --git-dir)"/commit-msg*; do
+            if [ -f "$possible_msg_file" ]; then
+                if grep -qE '\[skip-tests\]|--skip-tests' "$possible_msg_file" 2>/dev/null; then
+                    SKIP_DETECTED=true
+                    break
+                fi
+            fi
+        done
+    fi
+fi
+
+if [ "$SKIP_DETECTED" = true ]; then
+    echo -e "\033[0;33mSkipping PHP Unit Tests due to [skip-tests] flag in commit message.\033[0m"
+    # Create a file to indicate tests were skipped (for post-commit hook)
+    touch "$(git rev-parse --git-dir)/tests_were_skipped"
+    exit 0
+fi
+
+# Also check command line arguments for the flag
+for arg in "$@"; do
+    if [[ "$arg" == *"[skip-tests]"* ]] || [[ "$arg" == *"--skip-tests"* ]]; then
+        echo -e "\033[0;33mSkipping PHP Unit Tests due to --skip-tests flag.\033[0m"
+        # Create a file to indicate tests were skipped (for post-commit hook)
+        touch "$(git rev-parse --git-dir)/tests_were_skipped"
+        exit 0
+    fi
+done
+
+# Check environment variable as fallback
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "\033[0;33mSkipping PHP Unit Tests due to SKIP_TESTS environment variable.\033[0m"
+    # Create a file to indicate tests were skipped (for post-commit hook)
+    touch "$(git rev-parse --git-dir)/tests_were_skipped"
+    exit 0
+fi
+
+echo "Running PHP Unit Tests before commit..."
+
+# Save current stash
+STASH_NAME="pre-commit-$(date +%s)"
+git stash push -q --keep-index --include-untracked --message "$STASH_NAME"
+STASHED=$?
+
+# Run PHP Unit Tests
+php artisan test --testsuite=Unit > test_output.txt 2>&1
+
+# Get the exit code
+RESULT=$?
+
+# Restore the stash if we stashed changes
+if [ $STASHED -eq 0 ]; then
+    STASH_REF=$(git stash list | grep "$STASH_NAME" | cut -d: -f1)
+    if [ -n "$STASH_REF" ]; then
+        git stash pop -q $STASH_REF
+    fi
+fi
+
+# If tests failed, prevent the commit
+if [ $RESULT -ne 0 ]; then
+    echo -e "\033[0;31mPhp Unit Tests failed! Please fix the tests before committing.\033[0m"
+    rm test_output.txt
+    exit 1
+fi
+
+# Tests passed
+echo -e "\033[0;32mAll PHP Unit Tests passed!\033[0m"
+
+# Find test summary
+TEST_SUMMARY=$(grep -E "Tests:" test_output.txt | tail -n 1 | sed 's/^[[:space:]]*//')
+
+# Put test results into a file that post-commit hook will use
+echo "[PHPUNIT: $TEST_SUMMARY]" > "$(git rev-parse --git-dir)/phpunit_results"
+
+# Clean up
+rm test_output.txt
+
+exit 0 

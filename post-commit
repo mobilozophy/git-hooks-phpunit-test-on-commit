@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Check if we have PHP Unit results
+RESULTS_FILE="$(git rev-parse --git-dir)/phpunit_results"
+SKIP_TESTS_FILE="$(git rev-parse --git-dir)/tests_were_skipped"
+
+if [ -f "$RESULTS_FILE" ]; then
+    # Get the test results
+    PHPUNIT_RESULTS=$(cat "$RESULTS_FILE")
+    
+    # Get the last commit hash
+    COMMIT_HASH=$(git rev-parse HEAD)
+    
+    # Get the existing commit message
+    COMMIT_MSG=$(git log -1 --pretty=%B)
+    
+    # Only append if not already present
+    if [[ "$COMMIT_MSG" != *"[PHPUNIT:"* ]]; then
+        # Create a flag file to skip tests on the amend
+        touch "$(git rev-parse --git-dir)/skip_tests_on_amend"
+        
+        # Amend the commit to add the test results
+        echo -e "$COMMIT_MSG\n\n$PHPUNIT_RESULTS" | git commit --amend -F -
+        echo "Updated commit message with PHP Unit test results"
+    fi
+    
+    # Clean up - only remove if exists
+    rm -f "$RESULTS_FILE"
+elif [ -f "$SKIP_TESTS_FILE" ]; then
+    # Tests were skipped - optionally add a note (commented out by default)
+    # Uncomment the lines below if you want to add a note when tests are skipped
+    
+    # COMMIT_MSG=$(git log -1 --pretty=%B)
+    # if [[ "$COMMIT_MSG" != *"[TESTS SKIPPED]"* ]]; then
+    #     touch "$(git rev-parse --git-dir)/skip_tests_on_amend"
+    #     echo -e "$COMMIT_MSG\n\n[TESTS SKIPPED]" | git commit --amend -F -
+    #     echo "Added note about skipped tests to commit message"
+    # fi
+    
+    # Clean up
+    rm -f "$SKIP_TESTS_FILE"
+fi
+
+exit 0 
